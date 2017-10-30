@@ -225,8 +225,16 @@ def get_milestones(which):
 	return send_request(which, "milestones?state=open")
 
 def get_labels(which):
-	return send_request(which, "labels")
-	
+	labels = []
+	page = 1
+	while True:
+		new_labels = send_request(which, "labels?page=%d" % page)
+		if not new_labels:
+			break
+		labels.extend(new_labels)
+		page += 1
+	return labels
+
 def get_issue_by_id(which, issue_id):
 	return send_request(which, "issues/%d" % issue_id)
 
@@ -273,14 +281,14 @@ def import_label(source):
 		"name": source['name'],
 		"color": source['color']
 	}
-	
+
 	result_label = send_request('target', "labels", source)
 	print("Successfully created label '%s'" % result_label['name'])
 	return result_label
 
-def import_comments(comments, issue_number):
+def import_comments(issue, issue_number):
 	result_comments = []
-	for comment in comments:
+	for comment in issue['comments']:
 	
 		template_data = {}
 		template_data['user_name'] = comment['user']['login']
@@ -294,8 +302,23 @@ def import_comments(comments, issue_number):
 
 		result_comment = send_request('target', "issues/%s/comments" % issue_number, comment)
 		result_comments.append(result_comment)
+
+	# Post a comment ccing the original issue creater on the new one
+	last_comment = {}
+	last_comment['body'] = "cc @%s" % issue['user_name']
+	result_comment = send_request('target', "issues/%s/comments" % issue_number, last_comment)
+	result_comments.append(result_comment)
 		
 	return result_comments
+
+def close_issue_by_comment(comment, old_issue_number, issue_number):
+	close_comment = "This issue was labelled only for sig/multicluster and is thus moved over to kubernetes/federation#%s.\n" % issue_number
+	close_comment += "If this does not seem to be right, please reopen this and notify us @kubernetes/sig-multicluster-misc.\n"
+	close_comment += "/close"
+	comment['body'] = close_comment
+
+	print("Closing issue number", old_issue_number, "in k/k")
+	return send_request('source', "issues/%s/comments" % old_issue_number, comment)
 
 # Will only import milestones and issues that are in use by the imported issues, and do not exist in the target repository
 def import_issues(issues):
@@ -323,7 +346,9 @@ def import_issues(issues):
 		
 		new_issue = {}
 		new_issue['title'] = issue['title']
-		
+		new_issue['old_issue_number'] = issue['number']
+		new_issue['user_name']  = issue['user']['login']
+
 		# Temporary fix for marking closed issues
 		if issue['closed_at']:
 			new_issue['title'] = "[CLOSED] " + new_issue['title']
@@ -407,9 +432,12 @@ def import_issues(issues):
 		print("Successfully created issue '%s'" % result_issue['title'])
 		
 		if 'comments' in issue:
-			result_comments = import_comments(issue['comments'], result_issue['number'])		
+			result_comments = import_comments(issue, result_issue['number'])
 			print(" > Successfully added", len(result_comments), "comments.")
-		
+
+		new_comment = {}
+		close_issue_by_comment(new_comment, issue['old_issue_number'], result_issue['number'] )
+
 		result_issues.append(result_issue)
 	
 	state.current = state.IMPORT_COMPLETE
@@ -439,7 +467,7 @@ if __name__ == '__main__':
 	# Sort issues based on their original `id` field
 	# Confusing, but taken from http://stackoverflow.com/a/2878123/617937
 	issues.sort(key=lambda x:x['number'])
-	
+
 	# Further states defined within the function
 	# Finally, add these issues to the target repository
 	import_issues(issues)
